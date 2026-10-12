@@ -1,0 +1,27 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# planning / agent artifacts
+plans/
+*.plan.md
+STATUS.md
+
+# local noise
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+*.log
+.DS_Store
+.cursor/
+.vscode/
+.idea/
