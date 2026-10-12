@@ -10,6 +10,7 @@ import {
   UserReportResponseDto,
 } from './dto/report.dto';
 import { APP_TIMEZONE } from '../common/constants';
+import { toDayKey } from '../common/utils/day-key';
 
 const DURATION_EXPR =
   'TIMESTAMPDIFF(SECOND, te.started_at, COALESCE(te.ended_at, UTC_TIMESTAMP()))';
@@ -143,7 +144,7 @@ export class ReportsService {
       .getRawMany();
 
     return rows.map((row) => ({
-      day: row.day != null ? String(row.day) : undefined,
+      day: toDayKey(row.day),
       totalSeconds: Number(row.totalSeconds ?? 0),
     }));
   }
