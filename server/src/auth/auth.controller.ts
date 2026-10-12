@@ -67,7 +67,7 @@ export class AuthController {
     if (this.configService.get<string>('nodeEnv') === 'production') {
       throw new UnauthorizedException('Development login is disabled in production');
     }
-    return this.authService.loginForDevelopment(dto.email);
+    return this.authService.loginForDevelopment(dto.email, dto.name);
   }
 
   @ApiBearerAuth()

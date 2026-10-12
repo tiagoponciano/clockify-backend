@@ -31,7 +31,7 @@ export class AuthService {
     return this.buildAuthResponse(user);
   }
 
-  async loginForDevelopment(email: string) {
+  async loginForDevelopment(email: string, name?: string) {
     const domain = this.configService.get<string>('allowedEmailDomain') ?? 'certi.org.br';
     if (!email.toLowerCase().endsWith(`@${domain.toLowerCase()}`)) {
       throw new ForbiddenException(`Only @${domain} emails are allowed`);
@@ -40,7 +40,7 @@ export class AuthService {
     const user = await this.usersService.upsertFromGoogle({
       googleSub: `dev:${email.toLowerCase()}`,
       email,
-      name: email.split('@')[0],
+      name: name?.trim() || email.split('@')[0],
       avatarUrl: null,
     });
 

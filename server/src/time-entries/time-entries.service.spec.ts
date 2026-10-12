@@ -1,60 +1,25 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
-import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
+import { BadRequestException } from '@nestjs/common';
+import { IsNull } from 'typeorm';
 import { TimeEntriesService } from './time-entries.service';
 import { TimeEntry } from './time-entry.entity';
-import { TimeEntryTag } from './time-entry-tag.entity';
-import { ProjectsService } from '../projects/projects.service';
-import { TagsService } from '../tags/tags.service';
 import { Tag } from '../tags/tag.entity';
+import {
+  TimeEntriesServiceFixture,
+  createTimeEntriesServiceFixture,
+  projectId,
+  userId,
+} from './time-entries.service.fixture';
 
 describe('TimeEntriesService', () => {
   let service: TimeEntriesService;
-  let timeEntriesRepository: jest.Mocked<Repository<TimeEntry>>;
-  let projectsService: jest.Mocked<ProjectsService>;
-  let tagsService: jest.Mocked<TagsService>;
-  let dataSource: jest.Mocked<DataSource>;
-  let transactionManager: jest.Mocked<EntityManager>;
-
-  const userId = 'user-1';
-  const projectId = 'project-1';
-  const otherProjectId = 'project-2';
+  let timeEntriesRepository: TimeEntriesServiceFixture['timeEntriesRepository'];
+  let tagsService: TimeEntriesServiceFixture['tagsService'];
+  let dataSource: TimeEntriesServiceFixture['dataSource'];
+  let transactionManager: TimeEntriesServiceFixture['transactionManager'];
 
   beforeEach(() => {
-    timeEntriesRepository = {
-      findOne: jest.fn(),
-      save: jest.fn(),
-      remove: jest.fn(),
-      createQueryBuilder: jest.fn(),
-    } as unknown as jest.Mocked<Repository<TimeEntry>>;
-
-    projectsService = {
-      assertProjectNotArchived: jest.fn(),
-    } as unknown as jest.Mocked<ProjectsService>;
-
-    tagsService = {
-      findByIdsForProject: jest.fn(),
-    } as unknown as jest.Mocked<TagsService>;
-
-    transactionManager = {
-      findOne: jest.fn(),
-      save: jest.fn(),
-      create: jest.fn(),
-      delete: jest.fn(),
-    } as unknown as jest.Mocked<EntityManager>;
-
-    dataSource = {
-      transaction: jest.fn(async (cb: (manager: EntityManager) => Promise<unknown>) =>
-        cb(transactionManager),
-      ),
-    } as unknown as jest.Mocked<DataSource>;
-
-    service = new TimeEntriesService(
-      timeEntriesRepository,
-      {} as Repository<TimeEntryTag>,
-      projectsService,
-      tagsService,
-      dataSource,
-    );
+    ({ service, timeEntriesRepository, tagsService, dataSource, transactionManager } =
+      createTimeEntriesServiceFixture());
   });
 
   describe('rule 1: start closes previous open entry', () => {
@@ -75,7 +40,10 @@ describe('TimeEntriesService', () => {
 
       transactionManager.findOne.mockResolvedValueOnce(openEntry);
       transactionManager.save.mockImplementation(async (_entity, value) => value as TimeEntry);
-      transactionManager.create.mockImplementation((_entity, data) => ({ id: 'new-1', ...data }));
+      // EntityManager.create is overloaded; the mock only needs the single-object form.
+      (transactionManager.create as jest.Mock).mockImplementation(
+        (_entity: unknown, data: Partial<TimeEntry>) => ({ id: 'new-1', ...data }),
+      );
       timeEntriesRepository.findOne.mockResolvedValue({
         ...newEntry,
         startedAt: new Date(),
@@ -83,7 +51,7 @@ describe('TimeEntriesService', () => {
         updatedAt: new Date(),
         timeEntryTags: [],
         project: null,
-      } as TimeEntry);
+      } as unknown as TimeEntry);
 
       await service.start(userId, { projectId });
 
@@ -124,52 +92,6 @@ describe('TimeEntriesService', () => {
           endedAt: new Date(Date.now() + 3600000).toISOString(),
         }),
       ).rejects.toThrow(new BadRequestException('projectId is required'));
-    });
-  });
-
-  describe('rule 4: changing project removes old tag links', () => {
-    it('removes existing tags and saves new ones from the new project', async () => {
-      const entry = {
-        id: 'entry-1',
-        userId,
-        projectId,
-        startedAt: new Date(),
-        endedAt: new Date(Date.now() + 3600000),
-        description: '',
-        timeEntryTags: [{ tagId: 'old-tag', projectId }],
-      } as TimeEntry;
-
-      timeEntriesRepository.findOne
-        .mockResolvedValueOnce(entry)
-        .mockResolvedValueOnce({
-          ...entry,
-          projectId: otherProjectId,
-          timeEntryTags: [{ tagId: 'new-tag', tag: { id: 'new-tag', projectId: otherProjectId } }],
-          project: null,
-        } as TimeEntry);
-
-      tagsService.findByIdsForProject.mockResolvedValue([
-        { id: 'new-tag', projectId: otherProjectId } as Tag,
-      ]);
-
-      transactionManager.save.mockResolvedValue(entry);
-
-      await service.update(entry.id, userId, {
-        projectId: otherProjectId,
-        tagIds: ['new-tag'],
-      });
-
-      expect(transactionManager.delete).toHaveBeenCalledWith(TimeEntryTag, {
-        timeEntryId: entry.id,
-      });
-      expect(transactionManager.create).toHaveBeenCalledWith(
-        TimeEntryTag,
-        expect.objectContaining({
-          timeEntryId: entry.id,
-          tagId: 'new-tag',
-          projectId: otherProjectId,
-        }),
-      );
     });
   });
 
@@ -214,19 +136,6 @@ describe('TimeEntriesService', () => {
         }),
       ).rejects.toThrow(
         new BadRequestException('Manual time entries cannot exceed 24 hours'),
-      );
-    });
-  });
-
-  describe('ownership', () => {
-    it('throws ForbiddenException when updating another users entry', async () => {
-      timeEntriesRepository.findOne.mockResolvedValue({
-        id: 'entry-1',
-        userId: 'other-user',
-      } as TimeEntry);
-
-      await expect(service.update('entry-1', userId, { description: 'x' })).rejects.toThrow(
-        ForbiddenException,
       );
     });
   });

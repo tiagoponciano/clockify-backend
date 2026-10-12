@@ -74,5 +74,18 @@ describe('ReportsService', () => {
       expect(queryBuilder.groupBy).toHaveBeenCalledWith(dayExpr);
       expect(result.items).toEqual([{ day: '2026-01-15', totalSeconds: 7200 }]);
     });
+
+    it('returns the day as yyyy-MM-dd when the MySQL driver hands back a Date', async () => {
+      // mysql2 parses DATE columns into a Date at local midnight.
+      queryBuilder.getRawMany.mockResolvedValue([{ day: new Date(2026, 0, 15), totalSeconds: '7200' }]);
+
+      const result = await service.getSummary(
+        '2026-01-01T00:00:00.000Z',
+        '2026-01-31T23:59:59.999Z',
+        ReportGroupBy.DAY,
+      );
+
+      expect(result.items).toEqual([{ day: '2026-01-15', totalSeconds: 7200 }]);
+    });
   });
 });
