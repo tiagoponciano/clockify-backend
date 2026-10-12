@@ -19,7 +19,8 @@ Invariants:
 |------|--------|
 | Command | `pnpm import:clockify` (from `server/`) |
 | Entry | `src/clockify-import/run-import.ts` |
-| Service | `ClockifyImportService.run()` |
+| Service | `ClockifyImportService.run()` — reads config and runs the importers in order |
+| Importers | `importers/`: `users`, `clients` (plus the synthetic `No Client`), `projects`, `time-entries` (windows and pages), `entry-tags` |
 | Auth | None (local CLI; uses DB credentials + Clockify API key) |
 
 ## Environment
