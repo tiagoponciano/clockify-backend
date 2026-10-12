@@ -40,7 +40,10 @@ describe('TimeEntriesService', () => {
 
       transactionManager.findOne.mockResolvedValueOnce(openEntry);
       transactionManager.save.mockImplementation(async (_entity, value) => value as TimeEntry);
-      transactionManager.create.mockImplementation((_entity, data) => ({ id: 'new-1', ...data }));
+      // EntityManager.create is overloaded; the mock only needs the single-object form.
+      (transactionManager.create as jest.Mock).mockImplementation(
+        (_entity: unknown, data: Partial<TimeEntry>) => ({ id: 'new-1', ...data }),
+      );
       timeEntriesRepository.findOne.mockResolvedValue({
         ...newEntry,
         startedAt: new Date(),
@@ -48,7 +51,7 @@ describe('TimeEntriesService', () => {
         updatedAt: new Date(),
         timeEntryTags: [],
         project: null,
-      } as TimeEntry);
+      } as unknown as TimeEntry);
 
       await service.start(userId, { projectId });
 
