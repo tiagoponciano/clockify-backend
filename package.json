@@ -1,0 +1,16 @@
+{
+  "name": "clockify-backend",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "start:dev": "pnpm --dir server run start:dev",
+    "build": "pnpm --dir server run build",
+    "start": "pnpm --dir server run start",
+    "lint": "pnpm --dir server run lint",
+    "test": "pnpm --dir server run test",
+    "typecheck": "pnpm --dir server run typecheck",
+    "db:migrate": "pnpm --dir server run db:migrate",
+    "db:migrate:revert": "pnpm --dir server run db:migrate:revert",
+    "db:migrate:generate": "pnpm --dir server run db:migrate:generate"
+  }
+}
