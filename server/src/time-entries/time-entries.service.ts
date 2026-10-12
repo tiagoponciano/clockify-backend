@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
+import { DataSource, IsNull, Repository } from 'typeorm';
 import { TimeEntry } from './time-entry.entity';
 import { TimeEntryTag } from './time-entry-tag.entity';
 import { StartTimerDto } from './dto/start-timer.dto';
@@ -18,11 +18,18 @@ import {
 } from './dto/time-entry-response.dto';
 import { ProjectsService } from '../projects/projects.service';
 import { TagsService } from '../tags/tags.service';
-import { buildSkipTake } from '../common/pagination';
-import { isWithinRetroactiveWindow } from '../common/utils/timezone';
-import { MAX_MANUAL_ENTRY_DURATION_MS } from '../common/constants';
 import { canManageResources } from '../types';
 import { User } from '../users/user.entity';
+import {
+  assertEndedAfterStarted,
+  assertMaxManualDuration,
+  assertOwnership,
+  assertProjectRequired,
+  assertRetroactiveWindow,
+} from './time-entry.rules';
+import { assertTagsBelongToProject, saveTagLinks } from './time-entry-tag-links';
+import { persistUpdate, prepareUpdate } from './time-entry-update';
+import { buildListQuery } from './time-entries.query';
 
 const ENTRY_RELATIONS = {
   project: { client: true },
@@ -41,78 +48,6 @@ export class TimeEntriesService {
     private readonly dataSource: DataSource,
   ) {}
 
-  private assertOwnership(entry: TimeEntry, userId: string): void {
-    if (entry.userId !== userId) {
-      throw new ForbiddenException('You can only modify your own time entries');
-    }
-  }
-
-  private assertEndedAfterStarted(startedAt: Date, endedAt: Date | null): void {
-    if (endedAt && endedAt <= startedAt) {
-      throw new BadRequestException('endedAt must be greater than startedAt');
-    }
-  }
-
-  private assertRetroactiveWindow(startedAt: Date): void {
-    if (!isWithinRetroactiveWindow(startedAt)) {
-      throw new BadRequestException(
-        'startedAt must be within the last 10 days and cannot be in the future',
-      );
-    }
-  }
-
-  private assertMaxManualDuration(startedAt: Date, endedAt: Date | null): void {
-    if (!endedAt) {
-      return;
-    }
-    const durationMs = endedAt.getTime() - startedAt.getTime();
-    if (durationMs > MAX_MANUAL_ENTRY_DURATION_MS) {
-      throw new BadRequestException('Manual time entries cannot exceed 24 hours');
-    }
-  }
-
-  private assertProjectRequired(
-    projectId: string | null | undefined,
-  ): asserts projectId is string {
-    if (!projectId) {
-      throw new BadRequestException('projectId is required');
-    }
-  }
-
-  private async validateTagsForProject(projectId: string, tagIds: string[]): Promise<void> {
-    if (tagIds.length === 0) {
-      return;
-    }
-    const tags = await this.tagsService.findByIdsForProject(projectId, tagIds);
-    const foundIds = new Set(tags.map((tag) => tag.id));
-    const invalid = tagIds.filter((id) => !foundIds.has(id));
-    if (invalid.length > 0) {
-      throw new BadRequestException(`Invalid tags for project: ${invalid.join(', ')}`);
-    }
-  }
-
-  private async saveTagLinks(
-    manager: EntityManager,
-    entry: TimeEntry,
-    tagIds: string[],
-  ): Promise<void> {
-    if (tagIds.length === 0 || !entry.projectId) {
-      return;
-    }
-    const links = tagIds.map((tagId) =>
-      manager.create(TimeEntryTag, {
-        timeEntryId: entry.id,
-        tagId,
-        projectId: entry.projectId!,
-      }),
-    );
-    await manager.save(TimeEntryTag, links);
-  }
-
-  private async removeTagLinks(manager: EntityManager, timeEntryId: string): Promise<void> {
-    await manager.delete(TimeEntryTag, { timeEntryId });
-  }
-
   private async loadEntry(id: string): Promise<TimeEntry> {
     const entry = await this.timeEntriesRepository.findOne({
       where: { id },
@@ -127,9 +62,9 @@ export class TimeEntriesService {
   async start(userId: string, dto: StartTimerDto): Promise<TimeEntryResponseDto> {
     const tagIds = dto.tagIds ?? [];
 
-    this.assertProjectRequired(dto.projectId);
+    assertProjectRequired(dto.projectId);
     await this.projectsService.assertProjectNotArchived(dto.projectId);
-    await this.validateTagsForProject(dto.projectId, tagIds);
+    await assertTagsBelongToProject(this.tagsService, dto.projectId, tagIds);
 
     const entryId = await this.dataSource.transaction(async (manager) => {
       const now = new Date();
@@ -149,7 +84,7 @@ export class TimeEntriesService {
         endedAt: null,
       });
       const saved = await manager.save(TimeEntry, entry);
-      await this.saveTagLinks(manager, saved, tagIds);
+      await saveTagLinks(manager, saved, tagIds);
       return saved.id;
     });
 
@@ -182,13 +117,13 @@ export class TimeEntriesService {
     const endedAt = new Date(dto.endedAt);
     const tagIds = dto.tagIds ?? [];
 
-    this.assertRetroactiveWindow(startedAt);
-    this.assertEndedAfterStarted(startedAt, endedAt);
-    this.assertMaxManualDuration(startedAt, endedAt);
+    assertRetroactiveWindow(startedAt);
+    assertEndedAfterStarted(startedAt, endedAt);
+    assertMaxManualDuration(startedAt, endedAt);
 
-    this.assertProjectRequired(dto.projectId);
+    assertProjectRequired(dto.projectId);
     await this.projectsService.assertProjectNotArchived(dto.projectId);
-    await this.validateTagsForProject(dto.projectId, tagIds);
+    await assertTagsBelongToProject(this.tagsService, dto.projectId, tagIds);
 
     const entryId = await this.dataSource.transaction(async (manager) => {
       const entry = manager.create(TimeEntry, {
@@ -199,7 +134,7 @@ export class TimeEntriesService {
         endedAt,
       });
       const saved = await manager.save(TimeEntry, entry);
-      await this.saveTagLinks(manager, saved, tagIds);
+      await saveTagLinks(manager, saved, tagIds);
       return saved.id;
     });
 
@@ -215,39 +150,8 @@ export class TimeEntriesService {
       throw new ForbiddenException('You can only list your own time entries');
     }
 
-    const { skip, take } = buildSkipTake(query.page, query.limit);
-
-    const qb = this.timeEntriesRepository
-      .createQueryBuilder('te')
-      .leftJoinAndSelect('te.project', 'project')
-      .leftJoinAndSelect('project.client', 'client')
-      .leftJoinAndSelect('te.timeEntryTags', 'tet')
-      .leftJoinAndSelect('tet.tag', 'tag')
-      .orderBy('te.startedAt', 'DESC')
-      .skip(skip)
-      .take(take);
-
-    if (query.userId) {
-      qb.andWhere('te.userId = :userId', { userId: query.userId });
-    } else if (!canSeeTeam) {
-      qb.andWhere('te.userId = :userId', { userId: currentUser.id });
-    }
-
-    if (query.from) {
-      qb.andWhere('te.startedAt >= :from', { from: new Date(query.from) });
-    }
-    if (query.to) {
-      qb.andWhere('te.startedAt <= :to', { to: new Date(query.to) });
-    }
-    if (query.projectId) {
-      qb.andWhere('te.projectId = :projectId', { projectId: query.projectId });
-    }
-    if (query.tagId) {
-      qb.andWhere(
-        'EXISTS (SELECT 1 FROM time_entry_tags tet_filter WHERE tet_filter.time_entry_id = te.id AND tet_filter.tag_id = :tagId)',
-        { tagId: query.tagId },
-      );
-    }
+    const ownerId = query.userId || (canSeeTeam ? null : currentUser.id);
+    const qb = buildListQuery(this.timeEntriesRepository, query, ownerId);
 
     const [entries, total] = await qb.getManyAndCount();
 
@@ -275,72 +179,10 @@ export class TimeEntriesService {
     if (!entry) {
       throw new NotFoundException(`Time entry ${id} not found`);
     }
-    this.assertOwnership(entry, userId);
+    assertOwnership(entry, userId);
 
-    if (dto.projectId === null) {
-      throw new BadRequestException('projectId is required');
-    }
-
-    const projectChanging =
-      dto.projectId !== undefined && dto.projectId !== entry.projectId;
-    const targetProjectId =
-      dto.projectId !== undefined ? dto.projectId : entry.projectId;
-    this.assertProjectRequired(targetProjectId);
-    const targetStartedAt = dto.startedAt ? new Date(dto.startedAt) : entry.startedAt;
-    const targetEndedAt =
-      dto.endedAt !== undefined
-        ? dto.endedAt === null
-          ? null
-          : new Date(dto.endedAt)
-        : entry.endedAt;
-
-    if (dto.startedAt !== undefined) {
-      this.assertRetroactiveWindow(targetStartedAt);
-    }
-
-    await this.projectsService.assertProjectNotArchived(targetProjectId);
-
-    this.assertEndedAfterStarted(targetStartedAt, targetEndedAt);
-    this.assertMaxManualDuration(targetStartedAt, targetEndedAt);
-
-    let tagIds: string[] | undefined = dto.tagIds;
-    if (projectChanging) {
-      tagIds = dto.tagIds ?? [];
-    }
-
-    if (tagIds !== undefined) {
-      await this.validateTagsForProject(targetProjectId, tagIds);
-    } else if (!projectChanging && entry.timeEntryTags?.length) {
-      const existingTagIds = entry.timeEntryTags.map((link) => link.tagId);
-      await this.validateTagsForProject(targetProjectId, existingTagIds);
-    }
-
-    await this.dataSource.transaction(async (manager) => {
-      if (dto.description !== undefined) {
-        entry.description = dto.description ?? '';
-      }
-      if (dto.projectId !== undefined) {
-        entry.projectId = dto.projectId;
-      }
-      if (dto.startedAt !== undefined) {
-        entry.startedAt = targetStartedAt;
-      }
-      if (dto.endedAt !== undefined) {
-        entry.endedAt = targetEndedAt;
-      }
-
-      await manager.save(TimeEntry, entry);
-
-      if (projectChanging) {
-        await this.removeTagLinks(manager, entry.id);
-        if (tagIds && tagIds.length > 0) {
-          await this.saveTagLinks(manager, entry, tagIds);
-        }
-      } else if (dto.tagIds !== undefined) {
-        await this.removeTagLinks(manager, entry.id);
-        await this.saveTagLinks(manager, entry, dto.tagIds);
-      }
-    });
+    const prepared = await prepareUpdate(entry, dto, this.projectsService, this.tagsService);
+    await this.dataSource.transaction((manager) => persistUpdate(manager, entry, dto, prepared));
 
     return TimeEntryResponseDto.fromEntity(await this.loadEntry(id));
   }
@@ -350,7 +192,7 @@ export class TimeEntriesService {
     if (!entry) {
       throw new NotFoundException(`Time entry ${id} not found`);
     }
-    this.assertOwnership(entry, userId);
+    assertOwnership(entry, userId);
     await this.timeEntriesRepository.remove(entry);
   }
 }
