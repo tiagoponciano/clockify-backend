@@ -53,8 +53,10 @@ Para login local sem Google (apenas desenvolvimento):
 ```bash
 curl -X POST http://localhost:3000/api/auth/dev-login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"seu@certi.org.br"}'
+  -d '{"email":"seu@certi.org.br","name":"Seu Nome"}'
 ```
+
+`name` é opcional; sem ele, o nome exibido é a parte antes do `@`.
 
 ## Schema
 
